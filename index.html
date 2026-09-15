@@ -32,8 +32,9 @@
   if (tok || q.get('player')) {
     var style = document.createElement('style');
     style.textContent = '#main-nav{display:none!important}#mobile-menu{display:none!important}' +
-      '#page-dashboard,#page-roster,#page-records,#page-import,#page-gameday,#page-taper,#page-tournaments{display:none!important}' +
-      'footer{display:none!important}';
+      '#page-dashboard,#page-roster,#page-records,#page-import,#page-gameday,#page-taper,#page-tournaments{display:none!important}';
+    // El footer (con el credito del creador) ya no se oculta en modo jugador:
+    // debe verse en todas las vistas, no solo en la de staff.
     document.head && document.head.appendChild(style);
   }
 })();
@@ -852,6 +853,7 @@ body.player-shell .toast{bottom:calc(92px + var(--sab));}
 footer{position:relative;z-index:1;border-top:1px solid var(--line);margin-top:40px;padding:22px 30px;}
 .footer-inner{max-width:1360px;margin:0 auto;display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
 .footer-link{display:inline-flex;align-items:center;gap:8px;color:var(--dim);font-size:13px;}
+.footer-credit{margin-left:auto;font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);opacity:.75;}
 .conn{display:flex;align-items:center;gap:9px;font-family:var(--mono);font-size:11.5px;color:var(--dim);}
 .conn i{width:8px;height:8px;border-radius:50%;background:var(--mint);display:block;}
 
@@ -1092,7 +1094,17 @@ footer{position:relative;z-index:1;border-top:1px solid var(--line);margin-top:4
 
   <div class="panel section-gap">
     <div class="panel-title"><span class="dot" style="background:var(--pink)"></span>Reporte semanal</div>
-    <p style="font-size:13px;color:var(--dim);margin-bottom:1rem;line-height:1.6">Resumen descriptivo de los últimos 7 días: cumplimiento, carga, bienestar, molestias y restricciones activas.</p>
+    <p style="font-size:13px;color:var(--dim);margin-bottom:1rem;line-height:1.6">Resumen descriptivo del rango de fechas que elijas: cumplimiento, carga, bienestar, molestias y restricciones activas. No admite fechas antes del 11 de septiembre de 2026, cuando el equipo empezó a usar la app.</p>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:1rem">
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <span style="font-size:11.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.04em">Desde</span>
+        <input class="filter-input" type="date" id="rep-desde">
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <span style="font-size:11.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.04em">Hasta</span>
+        <input class="filter-input" type="date" id="rep-hasta">
+      </div>
+    </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap">
       <button class="btn-secondary" onclick="copyWeeklyReport()">Copiar reporte</button>
       <button class="btn-secondary" onclick="downloadWeeklyReport()">Descargar .txt</button>
@@ -1131,6 +1143,7 @@ footer{position:relative;z-index:1;border-top:1px solid var(--line);margin-top:4
 <footer>
   <div class="footer-inner">
     <span class="mono-note" style="margin-top:0">Plataneros de Corozal · Performance OS · <span id="app-version"></span></span>
+    <span class="footer-credit">VOLEII · by Carlos Torres</span>
   </div>
 </footer>
 
@@ -1398,7 +1411,7 @@ footer{position:relative;z-index:1;border-top:1px solid var(--line);margin-top:4
 <script>
 // Version visible en pantalla. Cuando alguien reporte algo raro, lo primero
 // es saber que version esta corriendo su telefono.
-const APP_VERSION = 'v1.1 · Plataneros de Corozal';
+const APP_VERSION = 'v1.4 · Plataneros de Corozal';
 
 // ============ SUPABASE ============
 // Backend propio de Plataneros de Corozal (proyecto separado del de Angels,
@@ -1553,6 +1566,12 @@ let _metricsCache = { version:-1, byPlayer:{} };
 const TEAM_COLOR = {'Plataneros':'#0096FF'};
 const TEAM_ORDER = ['Plataneros'];
 const PRACTICE_TEAM = 'Plataneros';
+// Fecha en que el equipo empezo a usar la app para registrar check-ins.
+// Ningun dia anterior a esta cuenta como practica "esperada" en cumplimiento
+// ni en adherencia: antes de esta fecha no habia forma de que un jugador
+// registrara nada, y contarlo como falta infla el numero de dias sin
+// check-in con dias que nunca pudieron llenarse.
+const DATA_START_DATE = '2026-09-11';
 
 // ============ CALENDARIO DE PARTIDOS (LVSM) ============
 // La tabla se sigue llamando "tournaments" en Supabase (para no romper las
@@ -2405,6 +2424,8 @@ function practiceDatesDesc(){
   var startBound = daysAgoStr(220);
   var minKey = keys.length ? keys.slice().sort()[0] : null;
   var start = (minKey && minKey < startBound) ? minKey : startBound;
+  // Nunca antes de que el equipo empezara a usar la app: ver DATA_START_DATE.
+  if(start < DATA_START_DATE) start = DATA_START_DATE;
   var end = today();
   var out = [];
   var d = dateFromISO(start), endD = dateFromISO(end);
@@ -2737,6 +2758,7 @@ async function init() {
   if(vEl) vEl.textContent = APP_VERSION;
   PLAYER_TOKEN = playerTokenFromURL();
   if (isPlayerMode()) { await startApp(); return; }
+  initReportRangeInputs();
   // Antes de resolver la sesion: sin esto el rail se pinta encima del
   // contenido durante el primer segundo.
   document.body.classList.add('staff-shell');
@@ -6541,8 +6563,14 @@ function renderGameDay() {
 /* =========================================================================
    REPORTE SEMANAL (descriptivo)
    ========================================================================= */
-function weeklyReportText(){
-  var from = daysAgoStr(6), to = today();
+function weeklyReportText(fromArg, toArg){
+  var from = fromArg || daysAgoStr(6);
+  var to = toArg || today();
+  // El rango lo elige el staff, pero nunca puede salirse de lo que tiene
+  // sentido: no antes de que existiera la app, no invertido, no al futuro.
+  if(from < DATA_START_DATE) from = DATA_START_DATE;
+  if(to < from) to = from;
+  if(to > today()) to = today();
   var players = activeOnly(DB.players).slice().sort(cmpPlayerNumber);
   var pausados = pausedOnly(DB.players).slice().sort(cmpPlayerNumber);
   var activePids = players.map(function(p){ return p.id; });
@@ -6646,12 +6674,40 @@ function weeklyReportText(){
   L.push(T('Generado por Plataneros de Corozal · Performance OS'));
   return L.join('\n');
 }
-function copyWeeklyReport(){ copyText(weeklyReportText(), T('Reporte semanal copiado')); }
+// Lee el rango elegido en los campos "Desde"/"Hasta" del panel de Datos.
+// Si estan vacios (primer uso) cae en los ultimos 7 dias, igual que antes.
+function reportRangeFromInputs(){
+  var elFrom = document.getElementById('rep-desde');
+  var elTo = document.getElementById('rep-hasta');
+  var from = (elFrom && elFrom.value) || daysAgoStr(6);
+  var to = (elTo && elTo.value) || today();
+  if(from < DATA_START_DATE) from = DATA_START_DATE;
+  if(to < from) to = from;
+  if(to > today()) to = today();
+  return { from:from, to:to };
+}
+// Precarga los campos de fecha del reporte (una sola vez, al iniciar sesion
+// de staff) y les pone limites para que no se pueda elegir antes del inicio
+// de registro ni una fecha futura.
+function initReportRangeInputs(){
+  var elFrom = document.getElementById('rep-desde');
+  var elTo = document.getElementById('rep-hasta');
+  if(!elFrom || !elTo) return;
+  elFrom.min = DATA_START_DATE; elTo.min = DATA_START_DATE;
+  elFrom.max = today(); elTo.max = today();
+  if(!elFrom.value) elFrom.value = (daysAgoStr(6) < DATA_START_DATE) ? DATA_START_DATE : daysAgoStr(6);
+  if(!elTo.value) elTo.value = today();
+}
+function copyWeeklyReport(){
+  var r = reportRangeFromInputs();
+  copyText(weeklyReportText(r.from, r.to), T('Reporte semanal copiado'));
+}
 function downloadWeeklyReport(){
-  var blob = new Blob([weeklyReportText()], {type:'text/plain;charset=utf-8'});
+  var r = reportRangeFromInputs();
+  var blob = new Blob([weeklyReportText(r.from, r.to)], {type:'text/plain;charset=utf-8'});
   var a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = (LANG==='en' ? 'plataneros-weekly-report-' : 'plataneros-reporte-semanal-') + today() + '.txt';
+  a.download = (LANG==='en' ? 'plataneros-weekly-report-' : 'plataneros-reporte-semanal-') + r.to + '.txt';
   a.click();
   toast(T('Reporte semanal descargado'));
 }
